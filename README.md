@@ -85,6 +85,10 @@ useful for production environments.
 If your certificate is not expiring soon, but you need to issue a new one
 anyways, the `--force-issue` flag can be provided.
 
+You can also use `--delete-old` to delete the certificate replaced by
+the newly generated in the ELB, so you can avoid running into the max limit
+of certificates per account.
+
 If you're into [Docker](https://www.docker.com/), there is an automatically
 built image of `letsencrypt-aws` available as
 [`alexgaynor/letsencrypt-aws`](https://hub.docker.com/r/alexgaynor/letsencrypt-aws/).
