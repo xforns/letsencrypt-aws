@@ -54,10 +54,13 @@ def _get_iam_certificate(iam_client, certificate_id):
                 response = iam_client.get_server_certificate(
                     ServerCertificateName=cert_name,
                 )
-                return x509.load_pem_x509_certificate(
-                    response["ServerCertificate"]["CertificateBody"].encode(),
-                    default_backend(),
-                )
+                return {
+                    'pem': x509.load_pem_x509_certificate(
+                            response["ServerCertificate"]["CertificateBody"].encode(),
+                            default_backend(),
+                            ),
+                    'name': cert_name
+                }
 
 
 class CertificateRequest(object):
@@ -97,6 +100,17 @@ class ELBCertificate(object):
             self.iam_client, elb_listener["SSLCertificateId"]
         )
 
+    def delete_old_certificate(self, logger, delete_old, current_cert_name):
+        logger.emit(
+            "updating-elb.delete-old-iam-certificate",
+            current_cert_name=current_cert_name
+            delete_old=delete_old
+        )
+        if delete_old:
+            response = self.iam_client.delete_server_certificate(
+                ServerCertificateName=current_cert_name
+            )
+    
     def update_certificate(self, logger, hosts, private_key, pem_certificate,
                            pem_certificate_chain):
         logger.emit(
@@ -339,22 +353,25 @@ def request_certificate(logger, acme_client, elb_name, authorizations, csr):
     return pem_certificate, pem_certificate_chain
 
 
-def update_cert(logger, acme_client, force_issue, cert_request):
+def update_cert(logger, acme_client, force_issue, cert_request, delete_old):
     logger.emit("updating-elb", elb_name=cert_request.cert_location.elb_name)
 
     current_cert = cert_request.cert_location.get_current_certificate()
-    if current_cert is not None:
+    current_cert_name = ""
+    if current_cert is not None and current_cert['pem'] is not None:
+        current_cert_pem = current_cert['pem']
+        current_cert_name = current_cert['name']
         logger.emit(
             "updating-elb.certificate-expiration",
             elb_name=cert_request.cert_location.elb_name,
-            expiration_date=current_cert.not_valid_after
+            expiration_date=current_cert_pem.not_valid_after
         )
         days_until_expiration = (
-            current_cert.not_valid_after - datetime.datetime.today()
+            current_cert_pem.not_valid_after - datetime.datetime.today()
         )
 
         try:
-            san_extension = current_cert.extensions.get_extension_for_class(
+            san_extension = current_cert_pem.extensions.get_extension_for_class(
                 x509.SubjectAlternativeName
             )
         except x509.ExtensionNotFound:
@@ -409,6 +426,11 @@ def update_cert(logger, acme_client, force_issue, cert_request):
             logger, cert_request.hosts,
             private_key, pem_certificate, pem_certificate_chain
         )
+
+        cert_request.cert_location.delete_old_certificate(logger, delete_old,
+            current_cert_name,
+        )
+
     finally:
         for authz_record in authorizations:
             logger.emit(
@@ -424,13 +446,14 @@ def update_cert(logger, acme_client, force_issue, cert_request):
             )
 
 
-def update_certs(logger, acme_client, force_issue, certificate_requests):
+def update_certs(logger, acme_client, force_issue, certificate_requests, delete_old):
     for cert_request in certificate_requests:
         update_cert(
             logger,
             acme_client,
             force_issue,
             cert_request,
+            delete_old
         )
 
 
@@ -482,7 +505,13 @@ def cli():
         "expiration."
     )
 )
-def update_certificates(persistent=False, force_issue=False):
+@click.option(
+    "--delete-old", is_flag=True, help=(
+        "Remove old certificate when a new one is generated."
+    )
+)
+
+def update_certificates(persistent=False, force_issue=False, delete_old=False):
     logger = Logger()
     logger.emit("startup")
 
@@ -529,7 +558,8 @@ def update_certificates(persistent=False, force_issue=False):
         while True:
             update_certs(
                 logger, acme_client,
-                force_issue, certificate_requests
+                force_issue, certificate_requests,
+                delete_old
             )
             # Sleep before we check again
             logger.emit("sleeping", duration=PERSISTENT_SLEEP_INTERVAL)
@@ -538,7 +568,8 @@ def update_certificates(persistent=False, force_issue=False):
         logger.emit("running", mode="single")
         update_certs(
             logger, acme_client,
-            force_issue, certificate_requests
+            force_issue, certificate_requests,
+            delete_old
         )
 
 
